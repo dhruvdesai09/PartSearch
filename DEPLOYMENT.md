@@ -205,7 +205,9 @@ Useful if you prefer a simpler Git connect flow or different pricing.
 
 ## 6. CORS (production)
 
-The API currently uses `allow_origins=["*"]` in `backend/main.py`, which is permissive. For production, restrict `allow_origins` to your Vercel domain, e.g. `https://your-app.vercel.app`, then redeploy the backend.
+The backend must **not** combine `Access-Control-Allow-Origin: *` with `Access-Control-Allow-Credentials: true` — browsers **block** cross-origin responses, and the frontend will show **network errors** (e.g. failed PDF upload) even when the server is up.
+
+This repo defaults to **`CORS_ORIGINS=*`** with **credentials disabled**, which is valid. To lock down production, set **`CORS_ORIGINS`** on Render to your Vercel origin(s), comma-separated, e.g. `https://your-app.vercel.app` (then credentials can be enabled in code for those origins only).
 
 ---
 
@@ -263,6 +265,7 @@ then the database hostname resolved to an **IPv6** address, and Render’s netwo
 | Backend crashes on start | `DATABASE_URL` missing/wrong; password special chars URL-encoded; Supabase project paused. |
 | Frontend: “Cannot reach the API” | `VITE_API_BASE` wrong; backend asleep (wait and retry); mixed `http`/`https`. |
 | CORS error in browser | Backend `allow_origins`; frontend URL must match what you allow. |
+| Upload/search “network” error but `/health` works | Was often **`*` + credentials** (fixed in `main.py`). Redeploy backend; set `CORS_ORIGINS` if needed. |
 | Search always empty | Upload succeeded? Check Supabase **Table Editor** for `products` rows. |
 
 ---

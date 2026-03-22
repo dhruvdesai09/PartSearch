@@ -483,10 +483,20 @@ def search_products(db: Session, q: str, limit: int = 10, min_similarity: float 
 
 app = FastAPI(title="Voice Searchable Price List System (backend)")
 
+# CORS: `allow_origins=["*"]` with `allow_credentials=True` is invalid — browsers block the
+# response (axios shows ERR_NETWORK). Use explicit origins + credentials, or wildcard + no credentials.
+_cors_origins_raw = (os.getenv("CORS_ORIGINS", "*").strip() or "*")
+if _cors_origins_raw == "*":
+    _cors_origins: List[str] = ["*"]
+    _cors_credentials = False
+else:
+    _cors_origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+    _cors_credentials = True
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=_cors_credentials,
     allow_methods=["*"],
     allow_headers=["*"],
 )

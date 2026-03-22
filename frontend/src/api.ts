@@ -15,21 +15,44 @@ export type UploadResponse = {
   unique_normalized: number;
 };
 
+/** Normalize env mistakes: quotes, trailing slashes, BOM. */
+function sanitizeApiBase(raw: string): string {
+  let s = raw.trim().replace(/^\uFEFF/, "");
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  return s.replace(/\/+$/, "");
+}
+
 /** Resolved API base (no trailing slash). */
 export function getApiBase(): string {
-  const raw = import.meta.env.VITE_API_BASE?.toString()?.trim() || "";
-  const base = raw || "http://localhost:8000";
+  const raw = import.meta.env.VITE_API_BASE?.toString() ?? "";
+  const base = sanitizeApiBase(raw) || "http://localhost:8000";
   return base.replace(/\/+$/, "");
 }
 
 const API_BASE = getApiBase();
 
 /**
+ * Shared client: no cookies/credentials (matches backend CORS when using wildcard origins).
+ */
+const apiClient = axios.create({
+  baseURL: API_BASE,
+  withCredentials: false,
+  headers: {
+    Accept: "application/json",
+  },
+});
+
+/**
  * Production build but VITE_API_BASE missing/wrong → browser still calls localhost or HTTP.
  */
 export function apiBaseMisconfiguredForProduction(): boolean {
   if (!import.meta.env.PROD) return false;
-  const raw = import.meta.env.VITE_API_BASE?.toString()?.trim() || "";
+  const raw = sanitizeApiBase(import.meta.env.VITE_API_BASE?.toString() ?? "");
   if (!raw) return true;
   if (raw.includes("localhost") || raw.includes("127.0.0.1")) return true;
   if (typeof window !== "undefined") {
@@ -63,11 +86,10 @@ export function uploadErrorMessage(err: unknown): string {
 }
 
 export async function searchProducts(q: string): Promise<SearchResult[]> {
-  const url = `${API_BASE}/search`;
-  const resp = await axios.get(url, {
+  const resp = await apiClient.get<SearchResult[]>("/search", {
     params: { q },
   });
-  return resp.data as SearchResult[];
+  return resp.data;
 }
 
 /** Uploads can exceed default timeouts on cold Render free tiers. */
@@ -82,9 +104,8 @@ export async function uploadPdf(
   if (sourceFile?.trim()) {
     form.append("source_file", sourceFile.trim());
   }
-  const resp = await axios.post<UploadResponse>(`${API_BASE}/upload`, form, {
+  const resp = await apiClient.post<UploadResponse>("/upload", form, {
     timeout: UPLOAD_TIMEOUT_MS,
   });
   return resp.data;
 }
-
