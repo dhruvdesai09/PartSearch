@@ -1,4 +1,5 @@
 import React from "react";
+import ApiConfigBanner from "./components/ApiConfigBanner";
 import PdfUploadPanel from "./components/PdfUploadPanel";
 import TypeaheadSearch from "./components/TypeaheadSearch";
 
@@ -32,6 +33,8 @@ export default function App() {
           </p>
         </div>
       </header>
+
+      <ApiConfigBanner />
 
       <main className="relative mx-auto max-w-3xl space-y-8 px-4 py-8 sm:px-6 sm:py-10">
         <PdfUploadPanel />
