@@ -1,5 +1,6 @@
 import os
 import re
+import socket
 import uuid
 import logging
 import tempfile
@@ -14,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from PIL import Image
 from sqlalchemy import DateTime, Integer, String, Text, create_engine, text, func
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
@@ -24,6 +26,44 @@ logger = logging.getLogger("price-search")
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 if not DATABASE_URL:
     logger.warning("DATABASE_URL is not set. Backend endpoints will fail until configured.")
+
+
+def _db_connect_args_for_url(database_url: str) -> Dict[str, Any]:
+    """
+    Supabase hostnames often resolve to IPv6 first. Some PaaS networks (e.g. Render)
+    cannot reach that path ("Network is unreachable"). Passing hostaddr with an IPv4
+    from DNS avoids that without changing DATABASE_URL.
+
+    Set DB_FORCE_IPV4=false to disable. Otherwise IPv4 is used when RENDER=true, or the
+    host is *.supabase.co, or DB_FORCE_IPV4=true.
+    """
+    out: Dict[str, Any] = {}
+    flag = os.getenv("DB_FORCE_IPV4", "").strip().lower()
+    if flag in ("0", "false", "no"):
+        return out
+    try:
+        u = make_url(database_url)
+    except Exception:
+        return out
+    host = u.host or ""
+    if not host or host in ("localhost", "127.0.0.1"):
+        return out
+    should_force = (
+        flag in ("1", "true", "yes")
+        or os.getenv("RENDER") == "true"
+        or host.endswith(".supabase.co")
+        or "pooler.supabase.com" in host
+    )
+    if not should_force:
+        return out
+    try:
+        infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
+        if infos:
+            out["hostaddr"] = infos[0][4][0]
+            logger.info("Using IPv4 hostaddr for DB host %s -> %s", host, out["hostaddr"])
+    except OSError as e:
+        logger.warning("Could not resolve IPv4 for DB host %s: %s", host, e)
+    return out
 
 # Ensure pytesseract can find the tesseract binary even when PATH isn't updated.
 _tesseract_cmd_env = os.getenv("TESSERACT_CMD")
@@ -59,12 +99,17 @@ class Product(Base):
     last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
-    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
-) if DATABASE_URL else None
+engine = (
+    create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
+        connect_args=_db_connect_args_for_url(DATABASE_URL),
+    )
+    if DATABASE_URL
+    else None
+)
 
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) if engine else None
 
