@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/vite-env.d.ts","./src/components/pdfuploadpanel.tsx","./src/components/typeaheadsearch.tsx","./src/components/voicesearchbutton.tsx","./src/hooks/useclickoutside.ts","./src/hooks/usedebouncedvalue.ts"],"version":"5.9.3"}

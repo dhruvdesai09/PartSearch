@@ -1,0 +1,324 @@
+---
+alwaysApply: true
+---
+
+Project Name
+Voice Searchable Price List System
+
+---
+
+PROJECT GOAL
+
+Build a cloud-hosted system that parses complex real-world price list PDFs and allows fast search via text or voice.
+
+System must:
+
+* run 24/7 on free hosting
+* work on phone and desktop
+* support multiple PDF formats
+* support fast part-number search
+* handle fuzzy and voice queries
+
+---
+
+SUPPORTED PDF FORMATS (CRITICAL)
+
+The system must support multiple PDF layouts.
+
+---
+
+FORMAT 1 – TABLE FORMAT
+
+Structure:
+
+designation | contents | pack_code | case_qty | price
+
+Example:
+
+VKTC 0904 | 2 Bearings (...) | 53 | 12 | 1425
+
+Characteristics:
+
+* rows may span multiple lines
+* contents column may wrap
+* standard table layout
+
+---
+
+FORMAT 2 – DUAL COLUMN FORMAT
+
+Structure:
+
+Product Designation | Price    Product Designation | Price
+
+Example:
+
+3308 A/C3 → 14,021    3317 A/C3 → 76,444
+
+Characteristics:
+
+* each row contains TWO products
+* no pack_code or case_qty
+* only designation + price
+* whitespace aligned, not strict table
+
+IMPORTANT:
+
+Each visual row must be split into TWO separate product records.
+
+---
+
+HOSTING ARCHITECTURE
+
+Frontend:
+
+Vercel
+
+Backend:
+
+Railway OR Render
+
+Database:
+
+Supabase
+
+---
+
+TECH STACK
+
+Frontend:
+
+React + Vite
+TailwindCSS
+Axios
+React Query
+
+Backend:
+
+Python
+FastAPI
+
+Libraries:
+
+pdfplumber
+pytesseract
+regex
+pandas
+rapidfuzz
+sqlalchemy
+psycopg2
+
+---
+
+DATABASE SCHEMA
+
+Table: products
+
+id (uuid)
+
+designation (string)
+
+normalized_designation (string)
+
+contents (text, nullable)
+
+pack_code (string, nullable)
+
+case_qty (integer, nullable)
+
+price (integer)
+
+source_file (string)
+
+last_updated (timestamp)
+
+---
+
+NORMALIZATION
+
+Convert designation:
+
+lowercase
+remove spaces
+remove "-", "/", "(", ")"
+
+Example:
+
+3308 A/C3 → 3308ac3
+VKTC 0904 → vktc0904
+
+---
+
+PDF PARSING PIPELINE
+
+Step 1: Extract raw text using pdfplumber
+
+Step 2: Split into lines
+
+Step 3: Detect format
+
+---
+
+FORMAT DETECTION LOGIC
+
+If line contains multiple prices in same row:
+
+→ use FORMAT 2 parser
+
+Else:
+
+→ use FORMAT 1 parser
+
+---
+
+FORMAT 1 PARSER
+
+1 detect designation at line start
+2 merge multi-line rows
+3 extract fields using regex
+4 clean values
+5 store in DB
+
+---
+
+FORMAT 2 PARSER (CRITICAL)
+
+1 identify rows with TWO entries
+
+Example line:
+
+3308 A/C3 14021    3317 A/C3 76444
+
+2 split line into left and right halves
+
+3 extract:
+
+LEFT:
+
+designation_left
+price_left
+
+RIGHT:
+
+designation_right
+price_right
+
+4 create TWO DB records
+
+Record 1:
+
+designation = left
+price = left price
+
+Record 2:
+
+designation = right
+price = right price
+
+5 set missing fields:
+
+contents = null
+pack_code = null
+case_qty = null
+
+---
+
+OCR FALLBACK
+
+If text extraction fails:
+
+Use pytesseract OCR
+
+Then apply same parsing logic
+
+---
+
+UPSERT RULE
+
+normalized_designation is unique
+
+If exists:
+
+update all details (designation, contents, pack_code, case_qty, price, source_file, last_updated)
+
+If not:
+
+insert new row
+
+---
+
+SEARCH ENGINE
+
+Search must prioritize part numbers.
+
+Steps:
+
+normalize query
+remove words like "bearing", "price"
+
+---
+
+SEARCH METHODS
+
+1 exact match
+2 partial match
+3 fuzzy match
+
+---
+
+FUZZY MATCHING
+
+Use:
+
+PostgreSQL pg_trgm
+or RapidFuzz
+
+---
+
+TYPEAHEAD SEARCH
+
+Must support instant suggestions.
+
+Example:
+
+62 → 6200, 6201, 6202
+
+---
+
+VOICE SEARCH
+
+Use Web Speech API in browser
+
+---
+
+API
+
+POST /upload
+
+GET /search?q=
+
+---
+
+PERFORMANCE TARGETS
+
+Search < 100 ms
+
+Parsing < 10 sec per 1000 rows
+
+---
+
+SYSTEM SUMMARY
+
+System supports:
+
+multiple PDF formats
+table parsing
+dual-column parsing
+fuzzy search
+voice search
+
+Runs 24/7 on free hosting
+
+Accessible from phone and desktop
+
+---

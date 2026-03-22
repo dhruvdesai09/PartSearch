@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+
+# Frontend build
+frontend/dist/
+frontend/dist-ssr/
+
+# Environment (never commit secrets)
+.env
+.env.local
+.env.*.local
+frontend/.env
+frontend/.env.local
+backend/.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+.venv/
+venv/
+*.egg-info/
+.eggs/
+
+# IDE / OS
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Logs & debug
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# Test / coverage
+coverage/
+.coverage
+htmlcov/
+
+# Optional local tooling
+*.local
