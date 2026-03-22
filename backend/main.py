@@ -6,6 +6,7 @@ import logging
 import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pdfplumber
 import pytesseract
@@ -28,26 +29,37 @@ if not DATABASE_URL:
     logger.warning("DATABASE_URL is not set. Backend endpoints will fail until configured.")
 
 
-def _db_connect_args_for_url(database_url: str) -> Dict[str, Any]:
+def _append_url_query_param(url: str, key: str, value: str) -> str:
+    """Merge a query parameter into a SQLAlchemy / libpq URL (preserves postgresql+psycopg2)."""
+    p = urlparse(url)
+    pairs = [(k, v) for k, v in parse_qsl(p.query, keep_blank_values=True) if k != key]
+    pairs.append((key, value))
+    new_query = urlencode(pairs)
+    return urlunparse((p.scheme, p.netloc, p.path, p.params, new_query, p.fragment))
+
+
+def _effective_database_url(database_url: str) -> str:
     """
     Supabase hostnames often resolve to IPv6 first. Some PaaS networks (e.g. Render)
-    cannot reach that path ("Network is unreachable"). Passing hostaddr with an IPv4
-    from DNS avoids that without changing DATABASE_URL.
+    cannot reach that path ("Network is unreachable").
+
+    libpq honors `hostaddr` in the connection URI query string; SQLAlchemy's
+    `connect_args={"hostaddr": ...}` alone is not always applied, so we embed
+    `hostaddr=<IPv4>` in the URL.
 
     Set DB_FORCE_IPV4=false to disable. Otherwise IPv4 is used when RENDER=true, or the
-    host is *.supabase.co, or DB_FORCE_IPV4=true.
+    host is *.supabase.co / *.pooler.supabase.com, or DB_FORCE_IPV4=true.
     """
-    out: Dict[str, Any] = {}
     flag = os.getenv("DB_FORCE_IPV4", "").strip().lower()
     if flag in ("0", "false", "no"):
-        return out
+        return database_url
     try:
         u = make_url(database_url)
     except Exception:
-        return out
+        return database_url
     host = u.host or ""
     if not host or host in ("localhost", "127.0.0.1"):
-        return out
+        return database_url
     should_force = (
         flag in ("1", "true", "yes")
         or os.getenv("RENDER") == "true"
@@ -55,15 +67,17 @@ def _db_connect_args_for_url(database_url: str) -> Dict[str, Any]:
         or "pooler.supabase.com" in host
     )
     if not should_force:
-        return out
+        return database_url
     try:
         infos = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_STREAM)
-        if infos:
-            out["hostaddr"] = infos[0][4][0]
-            logger.info("Using IPv4 hostaddr for DB host %s -> %s", host, out["hostaddr"])
+        if not infos:
+            return database_url
+        ipv4 = infos[0][4][0]
+        logger.info("Embedding IPv4 hostaddr for DB host %s -> %s", host, ipv4)
+        return _append_url_query_param(database_url, "hostaddr", ipv4)
     except OSError as e:
         logger.warning("Could not resolve IPv4 for DB host %s: %s", host, e)
-    return out
+        return database_url
 
 # Ensure pytesseract can find the tesseract binary even when PATH isn't updated.
 _tesseract_cmd_env = os.getenv("TESSERACT_CMD")
@@ -99,15 +113,16 @@ class Product(Base):
     last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+_EFFECTIVE_DB_URL = _effective_database_url(DATABASE_URL) if DATABASE_URL else ""
+
 engine = (
     create_engine(
-        DATABASE_URL,
+        _EFFECTIVE_DB_URL,
         pool_pre_ping=True,
         pool_size=int(os.getenv("DB_POOL_SIZE", "5")),
         max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "10")),
-        connect_args=_db_connect_args_for_url(DATABASE_URL),
     )
-    if DATABASE_URL
+    if _EFFECTIVE_DB_URL
     else None
 )
 

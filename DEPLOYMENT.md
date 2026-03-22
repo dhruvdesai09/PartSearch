@@ -244,7 +244,7 @@ connection to server at "db.xxxxx.supabase.co" (2406:....), port 5432 failed: Ne
 
 then the database hostname resolved to an **IPv6** address, and Render’s network path to that address failed. This is common with Supabase **direct** connections (`db.PROJECT.supabase.co:5432`).
 
-**Fix (built into this repo):** the backend resolves the hostname to an **IPv4** address and passes it to PostgreSQL as `hostaddr` when the host is `*.supabase.co`, `*.pooler.supabase.com`, or when `RENDER=true` / `DB_FORCE_IPV4=true`. **Redeploy** the backend after pulling the latest `main.py`.
+**Fix (built into this repo):** the backend resolves the hostname to an **IPv4** address and appends **`hostaddr=<IPv4>`** to your `DATABASE_URL` query string (libpq reads this from the URI; passing `hostaddr` only via SQLAlchemy `connect_args` is unreliable on some stacks). It applies when the host is `*.supabase.co`, `*.pooler.supabase.com`, or `RENDER=true` / `DB_FORCE_IPV4=true`. **Redeploy** the backend after pulling the latest `main.py`.
 
 **If you still see errors:**
 
