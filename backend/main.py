@@ -115,6 +115,20 @@ class Product(Base):
 
 _EFFECTIVE_DB_URL = _effective_database_url(DATABASE_URL) if DATABASE_URL else ""
 
+if _EFFECTIVE_DB_URL:
+    try:
+        # Log only host/hostaddr (mask credentials); helps confirm the IPv4 override is active.
+        u_eff = make_url(_EFFECTIVE_DB_URL)
+        q = dict(parse_qsl(urlparse(_EFFECTIVE_DB_URL).query, keep_blank_values=True))
+        logger.info(
+            "DB effective host=%s hostaddr=%s port=%s",
+            u_eff.host,
+            q.get("hostaddr"),
+            u_eff.port,
+        )
+    except Exception:
+        logger.info("DB effective URL computed (could not parse hostaddr for logging).")
+
 engine = (
     create_engine(
         _EFFECTIVE_DB_URL,
