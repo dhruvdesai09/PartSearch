@@ -167,27 +167,36 @@ export default function TypeaheadSearch() {
                     type="button"
                     role="option"
                     onClick={() => onSelect(r)}
-                    className="flex w-full items-start gap-3 border-t border-slate-100/90 px-4 py-3 text-left text-sm transition-colors duration-150 first:border-t-0 hover:bg-gradient-to-r hover:from-violet-50/80 hover:to-brand-50/50"
+                    className="flex w-full items-center justify-between gap-4 border-t border-slate-100/90 px-4 py-3 text-left transition-colors duration-150 first:border-t-0 hover:bg-gradient-to-r hover:from-violet-50/80 hover:to-brand-50/50"
                   >
                     <div className="min-w-0 flex-1">
-                      <div className="font-semibold text-slate-900">
+                      <div className="truncate text-sm font-semibold text-slate-900">
                         {r.designation}
                       </div>
                       {(r.pack_code != null || r.case_qty != null) && (
-                        <div className="mt-0.5 text-xs text-slate-500">
-                          Pack {r.pack_code ?? "—"}
-                          {r.case_qty != null
-                            ? ` · case qty ${r.case_qty}`
-                            : ""}
+                        <div className="mt-1 flex flex-wrap items-center gap-2">
+                          {r.pack_code != null && (
+                            <span className="rounded-full border border-violet-100 bg-violet-50/70 px-2 py-0.5 text-[11px] font-medium text-violet-800">
+                              Pack {r.pack_code}
+                            </span>
+                          )}
+                          {r.case_qty != null && (
+                            <span className="rounded-full border border-teal-100 bg-teal-50/60 px-2 py-0.5 text-[11px] font-medium text-teal-900">
+                              Case {r.case_qty}
+                            </span>
+                          )}
                         </div>
                       )}
                     </div>
+
                     <div className="shrink-0 text-right">
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-brand-600">
-                        Price
+                      <div className="text-[10px] font-extrabold uppercase tracking-wider text-violet-700">
+                        PRICE
                       </div>
-                      <div className="font-semibold tabular-nums text-violet-700">
-                        {priceFmt.format(r.price)}
+                      <div className="mt-0.5 rounded-xl border border-violet-200/70 bg-gradient-to-b from-violet-50 to-white px-3 py-2 shadow-sm shadow-violet-200/30">
+                        <div className="text-lg font-extrabold leading-none tabular-nums text-violet-900">
+                          {priceFmt.format(r.price)}
+                        </div>
                       </div>
                     </div>
                   </button>

@@ -327,6 +327,22 @@ def _parse_format1_row(row_text: str, source_file: Optional[str] = None) -> List
     except Exception:
         return []
 
+    # OCR/PDF extraction sometimes swaps the `case_qty` and `price` columns.
+    # Example symptom: UI shows `price=53` but `53` is actually the case qty.
+    #
+    # Heuristic:
+    # - if `price` is in a "small integer" range (<=200) but `case_qty` is not
+    #   (e.g. it's a typical multi-hundred price), swap them.
+    #
+    # This is intentionally narrow to avoid breaking good rows.
+    PRICE_MIN = int(os.getenv("PRICE_MIN", "100"))
+    if (
+        1 <= price <= 200
+        and (case_qty < 1 or case_qty > 200)
+        and case_qty >= PRICE_MIN
+    ):
+        price, case_qty = case_qty, price
+
     # Basic plausibility filters (especially important for OCR fallback).
     # Typical SKF price tables have prices in the hundreds+ and case quantities as small integers.
     if price < 100:
