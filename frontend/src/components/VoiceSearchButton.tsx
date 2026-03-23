@@ -2,6 +2,8 @@ import React, { useEffect, useRef, useState } from "react";
 
 type Props = {
   onTranscript: (text: string) => void;
+  className?: string;
+  compact?: boolean;
 };
 
 declare global {
@@ -11,7 +13,11 @@ declare global {
   }
 }
 
-export default function VoiceSearchButton({ onTranscript }: Props) {
+export default function VoiceSearchButton({
+  onTranscript,
+  className,
+  compact,
+}: Props) {
   const [supported, setSupported] = useState(false);
   const [listening, setListening] = useState(false);
   const recognitionRef = useRef<any>(null);
@@ -58,19 +64,31 @@ export default function VoiceSearchButton({ onTranscript }: Props) {
     }
   };
 
+  const baseBtn =
+    "shrink-0 items-center justify-center disabled:cursor-not-allowed disabled:opacity-45 transition-all duration-200 ease-out";
+  const compactBtn = compact
+    ? "flex h-10 w-10 rounded-full border px-0 py-0"
+    : "flex rounded-xl border px-4 py-3";
+
   return (
     <button
       type="button"
       onClick={start}
       disabled={!supported || listening}
-      className={`flex shrink-0 items-center justify-center gap-2 rounded-xl border px-4 py-3 text-sm font-semibold shadow-md transition-all duration-200 ease-out disabled:cursor-not-allowed disabled:opacity-45 ${
+      className={[
+        "flex",
+        baseBtn,
+        compactBtn,
         listening
           ? "animate-pulse-ring border-teal-400 bg-gradient-to-br from-teal-500 to-cyan-500 text-white shadow-teal-600/40"
-          : "border-violet-200/80 bg-white text-violet-800 shadow-violet-200/50 hover:border-violet-300 hover:bg-gradient-to-br hover:from-violet-50 hover:to-sky-50 hover:text-violet-900"
-      }`}
+          : "border-violet-200/80 bg-white text-violet-800 shadow-violet-200/50 hover:border-violet-300 hover:bg-gradient-to-br hover:from-violet-50 hover:to-sky-50 hover:text-violet-900",
+        className ?? "",
+      ].join(" ")}
       aria-label="Voice search"
       aria-pressed={listening}
-      title={supported ? "Voice search" : "Voice search not supported in this browser"}
+      title={
+        supported ? "Voice search" : "Voice search not supported in this browser"
+      }
     >
       <svg
         className={`h-5 w-5 ${listening ? "text-white" : "text-violet-600"}`}
@@ -86,9 +104,11 @@ export default function VoiceSearchButton({ onTranscript }: Props) {
           d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"
         />
       </svg>
-      <span className="hidden sm:inline">
-        {listening ? "Listening…" : "Voice"}
-      </span>
+      {!compact && (
+        <span className="hidden sm:inline">
+          {listening ? "Listening…" : "Voice"}
+        </span>
+      )}
     </button>
   );
 }

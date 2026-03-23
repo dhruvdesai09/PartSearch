@@ -1,236 +1,276 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useState } from "react";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { searchProducts, type SearchResult } from "../api";
+import { searchProductsWithOptions, type SearchResult } from "../api";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
-import { useClickOutside } from "../hooks/useClickOutside";
 import VoiceSearchButton from "./VoiceSearchButton";
 
 const priceFmt = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 0,
 });
 
-export default function TypeaheadSearch() {
-  const [query, setQuery] = useState("");
-  const [panelDismissed, setPanelDismissed] = useState(false);
-  const debounced = useDebouncedValue(query, 180);
-  const containerRef = useRef<HTMLDivElement>(null);
+function cleanQuery(raw: string): string {
+  let s = (raw || "").toLowerCase();
+  s = s.replace(
+    /\b(price|bearing|bearings|cost|rate|for|of|mrp|rsp|inr|skf)\b/g,
+    " ",
+  );
+  // Keep common part-number characters; replace others with spaces.
+  s = s.replace(/[^a-z0-9/\-()\s]/g, " ");
+  s = s.replace(/\s+/g, " ").trim();
+  return s;
+}
 
-  const enabled = useMemo(() => debounced.trim().length >= 1, [debounced]);
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
-  useEffect(() => {
-    setPanelDismissed(false);
-  }, [debounced]);
+function highlightMatch(text: string, q: string): React.ReactNode {
+  const cleaned = q.replace(/\s+/g, "");
+  if (cleaned.length < 2) return text;
+  const escaped = escapeRegExp(cleaned);
+  const re = new RegExp(escaped, "ig");
+  const parts = text.split(re);
+  if (parts.length <= 1) return text;
 
-  const {
-    data,
-    isFetching,
-    isError,
-    isPlaceholderData,
-  } = useQuery({
-    queryKey: ["search", debounced],
-    queryFn: () => searchProducts(debounced.trim()),
-    enabled,
-    placeholderData: keepPreviousData,
-    staleTime: 400,
-  });
-
-  useClickOutside(containerRef, () => setPanelDismissed(true), enabled);
-
-  const results: SearchResult[] = data ?? [];
-
-  const showEmpty =
-    !isFetching &&
-    !isError &&
-    results.length === 0 &&
-    enabled &&
-    !isPlaceholderData;
-
-  const showPanel =
-    enabled &&
-    !panelDismissed &&
-    (isFetching || isError || results.length > 0 || showEmpty);
-
-  const onSelect = (r: SearchResult) => {
-    setQuery(r.designation);
-    setPanelDismissed(true);
-  };
+  const matches = text.match(re);
+  if (!matches) return text;
 
   return (
-    <section
-      className="animate-fade-in-up rounded-2xl border border-violet-200/60 bg-white p-6 shadow-card ring-1 ring-violet-500/5 [animation-delay:60ms]"
-      aria-labelledby="search-heading"
-    >
-      <div className="flex items-start gap-3">
-        <span
-          className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-violet-500 to-brand-500 text-white shadow-md shadow-violet-500/25"
-          aria-hidden
-        >
-          <svg
-            className="h-5 w-5"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            strokeWidth={2}
-          >
-            <path
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-            />
-          </svg>
-        </span>
-        <div className="min-w-0 flex-1">
-          <h2
-            id="search-heading"
-            className="text-lg font-semibold tracking-tight text-slate-900"
-          >
-            Search parts
-          </h2>
-          <p className="mt-0.5 text-sm text-slate-600">
-            Typeahead and fuzzy matching — try a fragment of a part number.
-          </p>
-        </div>
-      </div>
-
-      <div className="mt-5 flex items-stretch gap-2 sm:gap-3">
-        <div ref={containerRef} className="relative min-w-0 flex-1">
-          <span className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-brand-500 transition-colors duration-200">
-            <svg
-              className="h-5 w-5"
-              fill="none"
-              viewBox="0 0 24 24"
-              stroke="currentColor"
-              strokeWidth={1.75}
-              aria-hidden
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
-              />
-            </svg>
-          </span>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onFocus={() => setPanelDismissed(false)}
-            placeholder="e.g. VKTC 0904, 6201…"
-            className="w-full rounded-xl border border-slate-200/90 bg-gradient-to-b from-white to-slate-50/80 py-3 pl-10 pr-3 text-sm text-slate-900 shadow-inner shadow-slate-200/30 outline-none ring-brand-500/0 transition duration-200 ease-out placeholder:text-slate-400 focus:border-brand-400 focus:bg-white focus:shadow-brand focus:ring-2 focus:ring-brand-500/25"
-            aria-label="Search parts"
-            aria-expanded={showPanel}
-            aria-controls="search-results"
-            autoComplete="off"
-            onKeyDown={(e) => {
-              if (e.key === "Escape") {
-                setQuery("");
-                setPanelDismissed(true);
-              }
-            }}
-          />
-
-          {showPanel && (
-            <div
-              id="search-results"
-              role="listbox"
-              className="absolute z-20 mt-2 w-full origin-top overflow-hidden rounded-xl border border-slate-200/80 bg-white/95 shadow-xl shadow-violet-950/10 ring-1 ring-slate-900/5 backdrop-blur-sm animate-fade-in"
-            >
-              {isFetching && (
-                <div
-                  className="h-0.5 w-full overflow-hidden bg-slate-100"
-                  aria-hidden
-                >
-                  <div className="h-full w-1/4 rounded-full bg-gradient-to-r from-brand-400 to-violet-500 animate-load-bar" />
-                </div>
-              )}
-              {isFetching && results.length === 0 && (
-                <div className="space-y-2 px-4 py-3">
-                  <div className="h-4 w-3/4 animate-pulse rounded bg-slate-100" />
-                  <div className="h-4 w-1/2 animate-pulse rounded bg-slate-100" />
-                  <div className="h-4 w-2/3 animate-pulse rounded bg-slate-100" />
-                </div>
-              )}
-              {isError && !isFetching && (
-                <div className="px-4 py-3 text-sm text-red-700">
-                  Could not search. Is the backend running?
-                </div>
-              )}
-              {showEmpty && (
-                <div className="px-4 py-3 text-sm text-slate-500">
-                  No matches for that query.
-                </div>
-              )}
-              {!isError &&
-                results.length > 0 &&
-                results.slice(0, 8).map((r) => (
-                  <button
-                    key={r.normalized_designation}
-                    type="button"
-                    role="option"
-                    onClick={() => onSelect(r)}
-                    className="flex w-full items-center justify-between gap-4 border-t border-slate-100/90 px-4 py-3 text-left transition-colors duration-150 first:border-t-0 hover:bg-gradient-to-r hover:from-violet-50/80 hover:to-brand-50/50"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <div className="truncate text-sm font-semibold text-slate-900">
-                        {r.designation}
-                      </div>
-                      {(r.pack_code != null || r.case_qty != null) && (
-                        <div className="mt-1 flex flex-wrap items-center gap-2">
-                          {r.pack_code != null && (
-                            <span className="rounded-full border border-violet-100 bg-violet-50/70 px-2 py-0.5 text-[11px] font-medium text-violet-800">
-                              Pack {r.pack_code}
-                            </span>
-                          )}
-                          {r.case_qty != null && (
-                            <span className="rounded-full border border-teal-100 bg-teal-50/60 px-2 py-0.5 text-[11px] font-medium text-teal-900">
-                              Case {r.case_qty}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="shrink-0 text-right">
-                      <div className="text-[10px] font-extrabold uppercase tracking-wider text-violet-700">
-                        PRICE
-                      </div>
-                      <div className="mt-0.5 rounded-xl border border-violet-200/70 bg-gradient-to-b from-violet-50 to-white px-3 py-2 shadow-sm shadow-violet-200/30">
-                        <div className="text-lg font-extrabold leading-none tabular-nums text-violet-900">
-                          {priceFmt.format(r.price)}
-                        </div>
-                      </div>
-                    </div>
-                  </button>
-                ))}
-              {isPlaceholderData && isFetching && results.length > 0 && (
-                <div className="border-t border-brand-100/80 bg-brand-50/50 px-3 py-1.5 text-center text-[11px] font-medium text-brand-700">
-                  Updating results…
-                </div>
-              )}
-            </div>
+    <>
+      {parts.map((p, idx) => (
+        <React.Fragment key={idx}>
+          {p}
+          {idx < matches.length && (
+            <mark className="rounded bg-amber-100 px-1 py-0.5 text-inherit font-semibold text-amber-700">
+              {matches[idx]}
+            </mark>
           )}
+        </React.Fragment>
+      ))}
+    </>
+  );
+}
+
+export default function TypeaheadSearch() {
+  const [query, setQuery] = useState("");
+  const debounced = useDebouncedValue(query, 200);
+
+  const [expanded, setExpanded] = useState<string | null>(null);
+
+  useEffect(() => {
+    setExpanded(null);
+  }, [debounced]);
+
+  const enabled = debounced.trim().length >= 1;
+
+  const primary = useQuery({
+    queryKey: ["search", debounced, 0.15],
+    queryFn: () =>
+      searchProductsWithOptions(debounced.trim(), {
+        minSimilarity: 0.15,
+      }),
+    enabled,
+    staleTime: 300,
+    placeholderData: keepPreviousData,
+  });
+
+  const fallback = useQuery({
+    queryKey: ["search", debounced, 0.05],
+    queryFn: () =>
+      searchProductsWithOptions(debounced.trim(), {
+        minSimilarity: 0.05,
+      }),
+    enabled:
+      enabled &&
+      primary.isSuccess &&
+      (primary.data?.length ?? 0) === 0 &&
+      !primary.isFetching,
+    staleTime: 300,
+    placeholderData: keepPreviousData,
+  });
+
+  const primaryResults: SearchResult[] = primary.data ?? [];
+  const fallbackResults: SearchResult[] = fallback.data ?? [];
+  const usingFallback = primaryResults.length === 0 && fallbackResults.length > 0;
+  const results: SearchResult[] = usingFallback ? fallbackResults : primaryResults;
+
+  const showList = enabled && (primary.isFetching || results.length > 0 || primary.isError);
+
+  const showNoResults =
+    enabled &&
+    primary.isSuccess &&
+    (primary.data?.length ?? 0) === 0 &&
+    fallback.isSuccess &&
+    (fallback.data?.length ?? 0) === 0;
+
+  const showError = primary.isError && !primary.isFetching;
+
+  return (
+    <div className="mx-auto max-w-2xl px-4 pb-10 pt-4 sm:px-6">
+      <div className="sticky top-0 z-20 -mx-4 px-4 pb-3 sm:-mx-6 sm:px-6">
+        <div className="rounded-2xl border border-slate-200 bg-white/90 p-3 shadow-sm backdrop-blur">
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-amber-50 text-amber-700">
+              <svg
+                className="h-5 w-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.75}
+                aria-hidden
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z"
+                />
+              </svg>
+            </div>
+
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <input
+                value={query}
+                onChange={(e) => setQuery(cleanQuery(e.target.value))}
+                placeholder="Search part… e.g. 6201 or VKTC 0904"
+                className="w-full min-w-0 bg-transparent text-base font-medium outline-none placeholder:text-slate-400"
+                aria-label="Search parts"
+                autoComplete="off"
+              />
+              <VoiceSearchButton
+                compact
+                onTranscript={(t) => {
+                  setQuery(cleanQuery(t));
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="mt-2 text-xs text-slate-500">
+            Type or speak a part number. Price will appear instantly.
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4">
+        {usingFallback && (
+          <div className="mb-3 text-sm text-slate-600">
+            Closest matches
+          </div>
+        )}
+
+        {showError && (
+          <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+            Could not reach the backend. Is it deployed?
+          </div>
+        )}
+
+        {showNoResults && (
+          <div className="rounded-xl border border-slate-200 bg-white px-4 py-4 text-sm text-slate-600">
+            No matches. Try a shorter query like{" "}
+            <span className="font-semibold">62</span>.
+          </div>
+        )}
+
+        {!showList && enabled && primary.isFetching && (
+          <div className="text-sm text-slate-600">Searching…</div>
+        )}
+
+        <div className="space-y-3">
+          {results.slice(0, 30).map((r) => {
+            const key = r.normalized_designation;
+            const isOpen = expanded === key;
+
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setExpanded(isOpen ? null : key)}
+                className="w-full rounded-2xl border border-slate-200 bg-white px-4 py-4 text-left shadow-sm"
+                aria-expanded={isOpen}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-semibold text-slate-900">
+                      {highlightMatch(r.designation, debounced)}
+                    </div>
+
+                    {(r.pack_code != null || r.case_qty != null) && (
+                      <div className="mt-1 text-xs text-slate-500">
+                        {r.pack_code != null ? `Pack ${r.pack_code}` : ""}
+                        {r.pack_code != null && r.case_qty != null ? " · " : ""}
+                        {r.case_qty != null ? `Case ${r.case_qty}` : ""}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="shrink-0 text-right">
+                    <div className="text-[11px] font-extrabold uppercase tracking-wide text-amber-700">
+                      Price
+                    </div>
+                    <div className="mt-0.5 text-3xl font-extrabold leading-none tabular-nums text-amber-600">
+                      {priceFmt.format(r.price)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-3 flex items-center justify-between">
+                  <div className="text-xs text-slate-500">
+                    {isOpen ? "Tap to collapse" : "Tap to expand"}
+                  </div>
+                  <svg
+                    className={`h-5 w-5 text-slate-400 transition-transform ${isOpen ? "rotate-180" : "rotate-0"}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.75}
+                    aria-hidden
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      d="M19 9l-7 7-7-7"
+                    />
+                  </svg>
+                </div>
+
+                {isOpen && (
+                  <div className="mt-4 rounded-xl border border-slate-100 bg-slate-50 px-3 py-3">
+                    <div className="text-sm font-semibold text-slate-800">
+                      Details
+                    </div>
+                    <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                      <div>
+                        <div className="text-slate-500">Pack</div>
+                        <div className="font-semibold text-slate-800">
+                          {r.pack_code ?? "—"}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-slate-500">Case qty</div>
+                        <div className="font-semibold text-slate-800">
+                          {r.case_qty ?? "—"}
+                        </div>
+                      </div>
+                      <div className="col-span-2">
+                        <div className="text-slate-500">Normalized</div>
+                        <div className="break-all font-semibold text-slate-700">
+                          {r.normalized_designation}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </button>
+            );
+          })}
         </div>
 
-        <VoiceSearchButton
-          onTranscript={(t) => {
-            setQuery(t);
-            setPanelDismissed(false);
-          }}
-        />
+        {(primary.isFetching || fallback.isFetching) && enabled && (
+          <div className="mt-4 text-center text-sm text-slate-500">
+            Updating…
+          </div>
+        )}
       </div>
-
-      <div className="mt-6 flex items-start gap-2 rounded-xl border border-teal-200/60 bg-gradient-to-r from-teal-50/90 to-brand-50/50 px-4 py-3 text-sm text-teal-900/90">
-        <span
-          className="mt-0.5 text-lg leading-none text-teal-600"
-          aria-hidden
-        >
-          ✦
-        </span>
-        <p>
-          <span className="font-semibold text-teal-900">Tip:</span> voice
-          input may add extra words — say only the part number for best
-          results.
-        </p>
-      </div>
-    </section>
+    </div>
   );
 }

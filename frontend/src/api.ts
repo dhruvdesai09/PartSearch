@@ -86,8 +86,19 @@ export function uploadErrorMessage(err: unknown): string {
 }
 
 export async function searchProducts(q: string): Promise<SearchResult[]> {
+  return searchProductsWithOptions(q);
+}
+
+export async function searchProductsWithOptions(
+  q: string,
+  opts?: { minSimilarity?: number; limit?: number },
+): Promise<SearchResult[]> {
   const resp = await apiClient.get<SearchResult[]>("/search", {
-    params: { q },
+    params: {
+      q,
+      min_similarity: opts?.minSimilarity,
+      limit: opts?.limit,
+    },
   });
   return resp.data;
 }
