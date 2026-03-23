@@ -135,6 +135,11 @@ In the service → **Environment**:
 | `DATABASE_URL` | Yes | Full Supabase URL with `postgresql+psycopg2://...` |
 | `OCR_ENABLED` | No | `false` on free tiers avoids needing Tesseract installed |
 | `LOG_LEVEL` | No | `INFO` |
+| `PRICE_MIN` | No | Minimum valid price for table parsing (default `100`) |
+| `PRICE_MAX` | No | Maximum valid price to reject OCR false positives (default `100000`) |
+| `FORMAT2_PRICE_MIN` | No | Minimum valid dual-column price for Format 2 (default `100`) |
+| `FORMAT2_PRICE_MAX` | No | Maximum valid dual-column price for Format 2 (default `100000`) |
+| `UPLOAD_DEBUG` | No | Set to `true` temporarily to return a small `sample` of parsed rows from `POST /upload` (useful for debugging price/case parsing). |
 
 Click **Save** and trigger a **Manual Deploy** if the first build failed before variables were set.
 
@@ -267,6 +272,7 @@ then the database hostname resolved to an **IPv6** address, and Render’s netwo
 | CORS error in browser | Backend `allow_origins`; frontend URL must match what you allow. |
 | Upload/search “network” error but `/health` works | Was often **`*` + credentials** (fixed in `main.py`). Redeploy backend; set `CORS_ORIGINS` if needed. |
 | Search always empty | Upload succeeded? Check Supabase **Table Editor** for `products` rows. |
+| Wrong prices / missing certain parts | Parsing guardrails may be too strict or the PDF layout is noisy. Check backend env `PRICE_MIN/PRICE_MAX` and `FORMAT2_PRICE_MIN/FORMAT2_PRICE_MAX` (and redeploy). Numeric-only part numbers are supported, but OCR/table extraction quality can still affect which rows are recognized. |
 
 ---
 

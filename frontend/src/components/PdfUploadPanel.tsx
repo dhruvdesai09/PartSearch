@@ -249,6 +249,23 @@ export default function PdfUploadPanel() {
                   file
                 </li>
               </ul>
+
+              {lastResult.sample && lastResult.sample.length > 0 && (
+                <div className="mt-4 rounded-lg border border-emerald-200/70 bg-white/60 px-3 py-2">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-emerald-800">
+                    Debug sample (first {Math.min(8, lastResult.sample.length)} rows)
+                  </div>
+                  <div className="mt-2 space-y-1 text-xs text-emerald-900">
+                    {lastResult.sample.slice(0, 8).map((r) => (
+                      <div key={r.normalized_designation} className="truncate">
+                        {r.designation} : price={r.price}
+                        {r.case_qty != null ? `, case=${r.case_qty}` : ""}
+                        {r.pack_code != null ? `, pack=${r.pack_code}` : ""}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </>
           )}
         </div>

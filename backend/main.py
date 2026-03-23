@@ -218,6 +218,18 @@ def parse_format2(text: str, source_file: Optional[str] = None) -> List[Dict[str
         if not re.search(r"\d", d1) or not re.search(r"\d", d2):
             continue
 
+        # Guard against false positives: sometimes OCR extracts a "case qty"-like
+        # small integer in the price position. Dual-column format should have
+        # real prices (typically >= 100 for this kind of catalog).
+        format2_price_min = int(os.getenv("FORMAT2_PRICE_MIN", "100"))
+        format2_price_max = int(os.getenv("FORMAT2_PRICE_MAX", os.getenv("PRICE_MAX", "100000")))
+        if p1 < format2_price_min and p2 < format2_price_min:
+            continue
+        if (p1 > format2_price_max or p2 > format2_price_max) and (
+            p1 > format2_price_max or p2 > format2_price_max
+        ):
+            continue
+
         now = datetime.now(timezone.utc)
         out.append(
             {
@@ -265,8 +277,13 @@ def parse_format1(text: str, source_file: Optional[str] = None) -> List[Dict[str
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
     out: List[Dict[str, Any]] = []
 
-    # Avoid treating format-2 designations (e.g. "3308 A/C3") as format-1 by requiring a letter-prefix plus digits.
-    designation_start_re = re.compile(r"^(?:\d+\s+)?[A-Za-z]{2,12}\s*\d")
+    # Start-of-row detection for Format 1.
+    # Some catalogs use letter-prefixed codes (e.g. VKTC 0904),
+    # while others are numeric-only (e.g. 6003/VU350).
+    # We support both, but still keep the ">=3 digits" plausibility checks later.
+    designation_start_re = re.compile(
+        r"^(?:\d+\s+)?(?:[A-Za-z]{2,12}\s*\d|\d{4,})"
+    )
 
     def integer_token_count(s: str) -> int:
         return len(re.findall(r"\d[\d,]*", s))
@@ -330,34 +347,33 @@ def _parse_format1_row(row_text: str, source_file: Optional[str] = None) -> List
     # OCR/PDF extraction sometimes swaps the `case_qty` and `price` columns.
     # Example symptom: UI shows `price=53` but `53` is actually the case qty.
     #
-    # Heuristic:
-    # - if `price` is in a "small integer" range (<=200) but `case_qty` is not
-    #   (e.g. it's a typical multi-hundred price), swap them.
-    #
-    # This is intentionally narrow to avoid breaking good rows.
+    # Heuristic (fix): if the parsed `price` is below our expected minimum price,
+    # but the parsed `case_qty` looks like a valid price (>= PRICE_MIN), swap them.
     PRICE_MIN = int(os.getenv("PRICE_MIN", "100"))
-    if (
-        1 <= price <= 200
-        and (case_qty < 1 or case_qty > 200)
-        and case_qty >= PRICE_MIN
-    ):
+    PRICE_MAX = int(os.getenv("PRICE_MAX", "100000"))
+    if price < PRICE_MIN and case_qty >= PRICE_MIN:
         price, case_qty = case_qty, price
 
     # Basic plausibility filters (especially important for OCR fallback).
     # Typical SKF price tables have prices in the hundreds+ and case quantities as small integers.
-    if price < 100:
+    if price < PRICE_MIN:
+        return []
+    if price > PRICE_MAX:
         return []
     if case_qty < 1 or case_qty > 200:
         return []
 
     # Extract designation near the start.
     m = re.search(
-        r"^(?:\d+\s+)?(?P<designation>[A-Za-z]{2,12}\s*\d[\dA-Za-z/\-()]*)(?:\s|$)",
+        r"^(?:\d+\s+)?(?P<designation>(?:[A-Za-z]{2,12}\s*\d[\dA-Za-z/\-()]*|\d{4,}[\dA-Za-z/\-()]*))(?:\s|$)",
         row_text,
     )
     if not m:
         # Fallback: search anywhere for a letter prefix followed by digits.
-        m = re.search(r"(?P<designation>[A-Za-z]{2,12}\s*\d[\dA-Za-z/\-()]{0,12})", row_text)
+        m = re.search(
+            r"(?P<designation>(?:[A-Za-z]{2,12}\s*\d|\d{4,})[\dA-Za-z/\-()]{0,12})",
+            row_text,
+        )
     if not m:
         return []
 
@@ -437,13 +453,44 @@ def parse_pdf_to_products(pdf_path: str, source_file: Optional[str] = None) -> L
                 products.extend(f1)
                 products.extend(f2)
 
-    # Dedupe within the upload by normalized_designation (last wins).
+    # Dedupe within the upload by `normalized_designation`.
+    # We should not blindly use "last wins" because Format 2 (dual-column) rows
+    # can overwrite correct Format 1 interpretations (pack/case/price).
     deduped: Dict[str, Dict[str, Any]] = {}
     for p in products:
         nd = p.get("normalized_designation") or ""
         if not nd:
             continue
-        deduped[nd] = p
+
+        existing = deduped.get(nd)
+        if not existing:
+            deduped[nd] = p
+            continue
+
+        # Prefer Format 1 rows (they include pack_code/case_qty).
+        existing_has_case = existing.get("case_qty") is not None
+        p_has_case = p.get("case_qty") is not None
+        existing_has_pack = existing.get("pack_code") is not None
+        p_has_pack = p.get("pack_code") is not None
+
+        if not existing_has_case and p_has_case:
+            deduped[nd] = p
+            continue
+        if not existing_has_pack and p_has_pack:
+            deduped[nd] = p
+            continue
+
+        # If both look like Format 1, keep the one with the larger price.
+        if existing_has_case and p_has_case and p.get("price") is not None:
+            try:
+                if int(p["price"]) > int(existing["price"]):
+                    deduped[nd] = p
+            except Exception:
+                # If comparison fails, keep existing.
+                pass
+
+        # Otherwise keep existing.
+
     return list(deduped.values())
 
 
@@ -624,8 +671,31 @@ async def upload_pdf(
             db.execute(stmt)
             db.commit()
 
-        unique_norms = len({p["normalized_designation"] for p in parsed_products})
-        return {"parsed": len(parsed_products), "upserted": len(parsed_products), "unique_normalized": unique_norms}
+        unique_norms = len({p["normalized_designation"] for p in payload_rows})
+
+        upload_debug = os.getenv("UPLOAD_DEBUG", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        resp: Dict[str, Any] = {
+            "parsed": len(parsed_products),
+            "upserted": len(payload_rows),
+            "unique_normalized": unique_norms,
+        }
+        if upload_debug:
+            resp["sample"] = [
+                {
+                    "designation": r["designation"],
+                    "normalized_designation": r["normalized_designation"],
+                    "price": r["price"],
+                    "pack_code": r.get("pack_code"),
+                    "case_qty": r.get("case_qty"),
+                }
+                for r in payload_rows[:12]
+            ]
+
+        return resp
     finally:
         try:
             os.remove(tmp_path)

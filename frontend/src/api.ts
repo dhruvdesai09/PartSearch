@@ -13,6 +13,13 @@ export type UploadResponse = {
   parsed: number;
   upserted: number;
   unique_normalized: number;
+  sample?: Array<{
+    designation: string;
+    normalized_designation: string;
+    price: number;
+    pack_code?: string | null;
+    case_qty?: number | null;
+  }>;
 };
 
 /** Normalize env mistakes: quotes, trailing slashes, BOM. */
