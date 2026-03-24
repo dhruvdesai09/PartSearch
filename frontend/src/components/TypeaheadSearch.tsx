@@ -201,11 +201,22 @@ export default function TypeaheadSearch() {
                     <div className="text-sm font-semibold text-slate-900">
                       {highlightMatch(r.designation, debounced)}
                     </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${
+                          r.source_type === "automotive"
+                            ? "bg-sky-100 text-sky-800"
+                            : "bg-violet-100 text-violet-800"
+                        }`}
+                      >
+                        {r.source_type}
+                      </span>
                     {normQ && r.normalized_designation === normQ && (
-                      <div className="mt-1 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                      <div className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
                         Exact match
                       </div>
                     )}
+                    </div>
 
                     {(r.pack_code != null || r.case_qty != null) && (
                       <div className="mt-1 text-xs text-slate-500">

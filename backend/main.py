@@ -442,85 +442,92 @@ def normalize_query(q: str) -> str:
     return normalize_designation(s)
 
 
-def search_products(db: Session, q: str, limit: int = 10, min_similarity: float = 0.15) -> List[SearchResult]:
+def _search_in_table(
+    db: Session,
+    table_name: str,
+    source_type: Literal["automotive", "industrial"],
+    norm: str,
+    prefix: str,
+    min_similarity: float,
+    limit: int,
+) -> List[Dict[str, Any]]:
+    sql = text(
+        f"""
+        SELECT
+            :source_type AS source_type,
+            designation,
+            normalized_designation,
+            price,
+            pack_code,
+            case_qty,
+            (
+                CASE
+                    WHEN normalized_designation = :norm THEN 1000
+                    WHEN normalized_designation LIKE :prefix THEN 500
+                    ELSE 0
+                END
+                + similarity(normalized_designation, :norm) * 100
+            ) AS score
+        FROM {table_name}
+        WHERE
+            normalized_designation = :norm
+            OR normalized_designation LIKE :prefix
+            OR similarity(normalized_designation, :norm) > :min_sim
+        ORDER BY score DESC
+        LIMIT :lim
+        """
+    )
+    return (
+        db.execute(
+            sql,
+            {
+                "source_type": source_type,
+                "norm": norm,
+                "prefix": prefix,
+                "min_sim": min_similarity,
+                "lim": max(1, min(int(limit), 50)),
+            },
+        )
+        .mappings()
+        .all()
+    )
+
+
+def search_products(
+    db: Session, q: str, limit: int = 10, min_similarity: float = 0.15
+) -> List[SearchResult]:
     norm = normalize_query(q)
     if not norm:
         return []
 
     prefix = f"{norm}%"
-    # Search both tables and rank by:
-    # exact > prefix > fuzzy ; automotive slightly ahead when tie.
-    sql = text(
-        """
-        SELECT *
-        FROM (
-            SELECT
-                'automotive'::text AS source_type,
-                designation,
-                normalized_designation,
-                price,
-                pack_code,
-                case_qty,
-                (
-                    CASE
-                        WHEN normalized_designation = :norm THEN 1000
-                        WHEN normalized_designation LIKE :prefix THEN 500
-                        ELSE 0
-                    END
-                    + similarity(normalized_designation, :norm) * 100
-                    + 5
-                ) AS score
-            FROM automotive_products
-            WHERE
-                normalized_designation = :norm
-                OR normalized_designation LIKE :prefix
-                OR similarity(normalized_designation, :norm) > :min_sim
+    lim = max(1, min(int(limit), 50))
 
-            UNION ALL
-
-            SELECT
-                'industrial'::text AS source_type,
-                designation,
-                normalized_designation,
-                price,
-                pack_code,
-                case_qty,
-                (
-                    CASE
-                        WHEN normalized_designation = :norm THEN 1000
-                        WHEN normalized_designation LIKE :prefix THEN 500
-                        ELSE 0
-                    END
-                    + similarity(normalized_designation, :norm) * 100
-                ) AS score
-            FROM industrial_products
-            WHERE
-                normalized_designation = :norm
-                OR normalized_designation LIKE :prefix
-                OR similarity(normalized_designation, :norm) > :min_sim
-        ) x
-        ORDER BY score DESC
-        LIMIT :lim
-        """
+    automotive_rows = _search_in_table(
+        db,
+        table_name="automotive_products",
+        source_type="automotive",
+        norm=norm,
+        prefix=prefix,
+        min_similarity=min_similarity,
+        limit=lim,
     )
-    rows = db.execute(
-        sql,
-        {
-            "norm": norm,
-            "prefix": prefix,
-            "min_sim": min_similarity,
-            "lim": max(1, min(int(limit), 50)),
-        },
-    ).mappings().all()
+    industrial_rows = _search_in_table(
+        db,
+        table_name="industrial_products",
+        source_type="industrial",
+        norm=norm,
+        prefix=prefix,
+        min_similarity=min_similarity,
+        limit=lim,
+    )
 
-    # Return best row per normalized designation, keeping highest score.
-    best: Dict[str, Dict[str, Any]] = {}
-    for r in rows:
-        nd = r["normalized_designation"]
-        if nd not in best or float(r["score"]) > float(best[nd]["score"]):
-            best[nd] = dict(r)
-    ordered = sorted(best.values(), key=lambda x: float(x["score"]), reverse=True)[: max(1, min(int(limit), 50))]
-    return [SearchResult(**row) for row in ordered]
+    # Keep both sources visible; do not dedupe across tables.
+    combined = [dict(r) for r in automotive_rows] + [dict(r) for r in industrial_rows]
+    combined.sort(key=lambda x: float(x["score"]), reverse=True)
+    # Return a larger merged window so one source does not hide the other.
+    merged_limit = min(lim * 2, 100)
+    return [SearchResult(**row) for row in combined[:merged_limit]]
 
 
 app = FastAPI(title="Voice Searchable Price List System (backend)")
