@@ -10,6 +10,10 @@ This app has three parts that must work together:
 
 The browser loads the **frontend**. The frontend calls the **backend** using `VITE_API_BASE`. The backend uses **`DATABASE_URL`** to talk to Postgres.
 
+Current data model:
+- `automotive_products` table: for 6-column automotive price lists (`sl no, designation, contents, pack code, case qty, MRP`).
+- `industrial_products` table: for dual-column industrial lists (`designation, price, designation, price`).
+
 ---
 
 ## 0. Put the code on GitHub (or GitLab) first
@@ -196,6 +200,15 @@ Useful if you prefer a simpler Git connect flow or different pricing.
 
 8. Optional: add the same variable for **Preview** deployments if you use PR previews.
 
+### Upload API payload (important)
+
+`POST /upload` requires multipart form fields:
+- `file`: PDF file
+- `price_list_type`: `automotive` or `industrial`
+- `source_file`: optional string
+
+The current frontend upload form includes a selector for `price_list_type`.
+
 ---
 
 ## 5. End-to-end checklist
@@ -271,7 +284,7 @@ then the database hostname resolved to an **IPv6** address, and Render’s netwo
 | Frontend: “Cannot reach the API” | `VITE_API_BASE` wrong; backend asleep (wait and retry); mixed `http`/`https`. |
 | CORS error in browser | Backend `allow_origins`; frontend URL must match what you allow. |
 | Upload/search “network” error but `/health` works | Was often **`*` + credentials** (fixed in `main.py`). Redeploy backend; set `CORS_ORIGINS` if needed. |
-| Search always empty | Upload succeeded? Check Supabase **Table Editor** for `products` rows. |
+| Search always empty | Upload succeeded? Check Supabase **Table Editor** for `automotive_products` and `industrial_products` rows. |
 | Wrong prices / missing certain parts | Parsing guardrails may be too strict or the PDF layout is noisy. Check backend env `PRICE_MIN/PRICE_MAX` and `FORMAT2_PRICE_MIN/FORMAT2_PRICE_MAX` (and redeploy). Numeric-only part numbers are supported, but OCR/table extraction quality can still affect which rows are recognized. |
 
 ---

@@ -20,6 +20,13 @@ function cleanQuery(raw: string): string {
   return s;
 }
 
+function normalizeForExact(raw: string): string {
+  return (raw || "")
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[-/()]/g, "");
+}
+
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -62,6 +69,7 @@ export default function TypeaheadSearch() {
   }, [debounced]);
 
   const enabled = debounced.trim().length >= 1;
+  const normQ = normalizeForExact(debounced);
 
   const primary = useQuery({
     queryKey: ["search", debounced, 0.15],
@@ -193,6 +201,11 @@ export default function TypeaheadSearch() {
                     <div className="text-sm font-semibold text-slate-900">
                       {highlightMatch(r.designation, debounced)}
                     </div>
+                    {normQ && r.normalized_designation === normQ && (
+                      <div className="mt-1 inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                        Exact match
+                      </div>
+                    )}
 
                     {(r.pack_code != null || r.case_qty != null) && (
                       <div className="mt-1 text-xs text-slate-500">

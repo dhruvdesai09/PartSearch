@@ -5,7 +5,7 @@ import uuid
 import logging
 import tempfile
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import pdfplumber
@@ -92,25 +92,28 @@ class Base(DeclarativeBase):
     pass
 
 
-class Product(Base):
-    __tablename__ = "products"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        primary_key=True,
-        default=uuid.uuid4,
-    )
+class _ProductBase:
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     designation: Mapped[str] = mapped_column(String, nullable=False)
-    # CRITICAL: normalized_designation must be unique.
-    normalized_designation: Mapped[str] = mapped_column(String, unique=True, nullable=False)
-
+    normalized_designation: Mapped[str] = mapped_column(
+        String, unique=True, nullable=False
+    )
     contents: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     pack_code: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     case_qty: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-
     price: Mapped[int] = mapped_column(Integer, nullable=False)
-
     source_file: Mapped[Optional[str]] = mapped_column(String, nullable=True)
-    last_updated: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_updated: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
+class AutomotiveProduct(_ProductBase, Base):
+    __tablename__ = "automotive_products"
+
+
+class IndustrialProduct(_ProductBase, Base):
+    __tablename__ = "industrial_products"
 
 
 _EFFECTIVE_DB_URL = _effective_database_url(DATABASE_URL) if DATABASE_URL else ""
@@ -181,55 +184,185 @@ def _attempt_ocr_page(page: Any) -> str:
     return pytesseract.image_to_string(image)
 
 
-def parse_format2(text: str, source_file: Optional[str] = None) -> List[Dict[str, Any]]:
+def _dedupe_products(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    deduped: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        nd = r.get("normalized_designation") or ""
+        if not nd:
+            continue
+        existing = deduped.get(nd)
+        if not existing:
+            deduped[nd] = r
+            continue
+        # Prefer richer rows (automotive rows carry pack/case).
+        score_existing = int(existing.get("pack_code") is not None) + int(
+            existing.get("case_qty") is not None
+        )
+        score_new = int(r.get("pack_code") is not None) + int(
+            r.get("case_qty") is not None
+        )
+        if score_new > score_existing:
+            deduped[nd] = r
+            continue
+        if score_new == score_existing and int(r.get("price", 0)) > int(
+            existing.get("price", 0)
+        ):
+            deduped[nd] = r
+    return list(deduped.values())
+
+
+def parse_automotive_text(
+    text: str, source_file: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
-    Format 2 (dual column): each visual row contains TWO products.
-    Expect extracted lines like:
-      "3308 A/C3 14021    3317 A/C3 76444"
-    Create TWO DB records with designation+price only.
+    Automotive format (6 columns):
+      sl_no | designation | contents | pack_code | case_qty | MRP
     """
     if not text:
         return []
 
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    price_min = int(os.getenv("PRICE_MIN", "100"))
+    price_max = int(os.getenv("PRICE_MAX", "100000"))
+
+    lines = [_cleanup_ws(ln) for ln in text.splitlines() if _cleanup_ws(ln)]
     out: List[Dict[str, Any]] = []
 
-    # Heuristic: one line should contain two designation blocks plus two numeric prices.
+    # A row usually starts with sl-no + designation, or directly a designation.
+    row_start_re = re.compile(
+        r"^(?:\d+\s+)?(?:[A-Za-z]{2,12}\s*\d[\dA-Za-z/\-()]*|\d{4,}[\dA-Za-z/\-()]*)\b"
+    )
+    acc = ""
+    for line in lines:
+        lower = line.lower()
+        if any(
+            tok in lower
+            for tok in [
+                "sl no",
+                "designation",
+                "contents",
+                "pack code",
+                "case qty",
+                "mrp",
+            ]
+        ):
+            continue
+        if row_start_re.match(line):
+            if acc:
+                parsed = _parse_automotive_row(
+                    acc, source_file=source_file, price_min=price_min, price_max=price_max
+                )
+                if parsed:
+                    out.append(parsed)
+            acc = line
+        elif acc:
+            acc = f"{acc} {line}"
+
+    if acc:
+        parsed = _parse_automotive_row(
+            acc, source_file=source_file, price_min=price_min, price_max=price_max
+        )
+        if parsed:
+            out.append(parsed)
+
+    return _dedupe_products(out)
+
+
+def _parse_automotive_row(
+    row_text: str,
+    source_file: Optional[str],
+    price_min: int,
+    price_max: int,
+) -> Optional[Dict[str, Any]]:
+    row_text = _cleanup_ws(row_text)
+    if not row_text:
+        return None
+
+    # designation near start, optional leading serial number.
+    m = re.search(
+        r"^(?:\d+\s+)?(?P<designation>(?:[A-Za-z]{2,12}\s*\d[\dA-Za-z/\-()]*|\d{4,}[\dA-Za-z/\-()]*))(?:\s|$)",
+        row_text,
+    )
+    if not m:
+        return None
+    designation = _cleanup_ws(m.group("designation"))
+    if not re.search(r"\d{3,}", designation):
+        return None
+
+    int_tokens = re.findall(r"\d[\d,]*", row_text)
+    if len(int_tokens) < 3:
+        return None
+    pack_raw, case_raw, price_raw = int_tokens[-3], int_tokens[-2], int_tokens[-1]
+    try:
+        pack_code = pack_raw.replace(",", "")
+        case_qty = int(case_raw.replace(",", ""))
+        price = int(price_raw.replace(",", ""))
+    except Exception:
+        return None
+
+    # Swap if OCR/line-wrap confuses case_qty vs MRP.
+    if price < price_min and case_qty >= price_min:
+        price, case_qty = case_qty, price
+
+    if case_qty < 1 or case_qty > 500:
+        return None
+    if price < price_min or price > price_max:
+        return None
+
+    contents: Optional[str] = None
+    try:
+        designation_end = m.end("designation")
+        pack_idx = row_text.rfind(pack_raw)
+        if pack_idx > designation_end:
+            c = _cleanup_ws(row_text[designation_end:pack_idx])
+            if c:
+                contents = c
+    except Exception:
+        contents = None
+
+    return {
+        "designation": designation,
+        "normalized_designation": normalize_designation(designation),
+        "contents": contents,
+        "pack_code": pack_code or None,
+        "case_qty": case_qty,
+        "price": price,
+        "source_file": source_file,
+        "last_updated": datetime.now(timezone.utc),
+    }
+
+
+def parse_industrial_text(
+    text: str, source_file: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Industrial format (no headings):
+      designation | price | designation | price
+    """
+    if not text:
+        return []
+    pmin = int(os.getenv("FORMAT2_PRICE_MIN", os.getenv("PRICE_MIN", "100")))
+    pmax = int(os.getenv("FORMAT2_PRICE_MAX", os.getenv("PRICE_MAX", "100000")))
+    lines = [_cleanup_ws(ln) for ln in text.splitlines() if _cleanup_ws(ln)]
+    out: List[Dict[str, Any]] = []
+
     dual_re = re.compile(
         r"^(?P<d1>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)]+?)\s+(?P<p1>\d[\d,]*)\s+"
         r"(?P<d2>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)]+?)\s+(?P<p2>\d[\d,]*)$"
     )
-
     for line in lines:
-        # Skip obvious non-data lines.
-        if any(tok.lower() in line.lower() for tok in ["note", "product designation", "rsp", "inr", "skf"]):
-            continue
-
         m = dual_re.match(line)
         if not m:
             continue
-
         d1 = _cleanup_ws(m.group("d1"))
         d2 = _cleanup_ws(m.group("d2"))
         p1 = _parse_int(m.group("p1"))
         p2 = _parse_int(m.group("p2"))
         if not p1 or not p2:
             continue
-        if not re.search(r"\d", d1) or not re.search(r"\d", d2):
+        if p1 < pmin or p2 < pmin or p1 > pmax or p2 > pmax:
             continue
-
-        # Guard against false positives: sometimes OCR extracts a "case qty"-like
-        # small integer in the price position. Dual-column format should have
-        # real prices (typically >= 100 for this kind of catalog).
-        format2_price_min = int(os.getenv("FORMAT2_PRICE_MIN", "100"))
-        format2_price_max = int(os.getenv("FORMAT2_PRICE_MAX", os.getenv("PRICE_MAX", "100000")))
-        if p1 < format2_price_min and p2 < format2_price_min:
+        if not re.search(r"\d{3,}", d1) or not re.search(r"\d{3,}", d2):
             continue
-        if (p1 > format2_price_max or p2 > format2_price_max) and (
-            p1 > format2_price_max or p2 > format2_price_max
-        ):
-            continue
-
         now = datetime.now(timezone.utc)
         out.append(
             {
@@ -255,243 +388,38 @@ def parse_format2(text: str, source_file: Optional[str] = None) -> List[Dict[str
                 "last_updated": now,
             }
         )
-
-    # Drop empty normalized values.
-    return [r for r in out if r.get("normalized_designation")]
+    return _dedupe_products(out)
 
 
-def parse_format1(text: str, source_file: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Format 1 (table): designation | contents | pack_code | case_qty | price
-    rows may span multiple lines
-
-    OCR note:
-    Real PDFs often include a leading row number column (e.g. "44 VKTC 0955 ...").
-    For robustness, we:
-      - allow optional leading digits before the designation
-      - parse `pack_code`, `case_qty`, `price` from the last three integer tokens
-    """
-    if not text:
-        return []
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    out: List[Dict[str, Any]] = []
-
-    # Start-of-row detection for Format 1.
-    # Some catalogs use letter-prefixed codes (e.g. VKTC 0904),
-    # while others are numeric-only (e.g. 6003/VU350).
-    # We support both, but still keep the ">=3 digits" plausibility checks later.
-    designation_start_re = re.compile(
-        r"^(?:\d+\s+)?(?:[A-Za-z]{2,12}\s*\d|\d{4,})"
-    )
-
-    def integer_token_count(s: str) -> int:
-        return len(re.findall(r"\d[\d,]*", s))
-
-    acc = ""
-    for line in lines:
-        lower = line.lower()
-        if any(tok in lower for tok in ["note", "skf", "r s p", "rsp", "mrp"]):
-            # Skip obvious non-row fragments.
-            continue
-
-        if designation_start_re.match(line):
-            # If previous accumulator already has enough numeric tokens, flush it.
-            if acc and integer_token_count(acc) >= 3:
-                out.extend(_parse_format1_row(acc, source_file=source_file))
-                acc = ""
-            # Start new row.
-            acc = line
-            continue
-
-        if acc:
-            acc = f"{acc} {line}"
-            if integer_token_count(acc) >= 3:
-                out.extend(_parse_format1_row(acc, source_file=source_file))
-                acc = ""
-
-    if acc:
-        out.extend(_parse_format1_row(acc, source_file=source_file))
-
-    return [r for r in out if r.get("normalized_designation")]
-
-
-def _parse_format1_row(row_text: str, source_file: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Parse a single accumulated row into:
-      designation, contents, pack_code, case_qty, price
-
-    OCR-tolerant approach:
-    - designation: first letter+digits token (allow optional leading row number)
-    - pack_code/case_qty/price: last three integer tokens in the row
-    """
-    row_text = _cleanup_ws(row_text)
-    if not row_text:
-        return []
-
-    # Extract integers in order, then take the last 3 as (pack_code, case_qty, price).
-    int_tokens = re.findall(r"\d[\d,]*", row_text)
-    if len(int_tokens) < 3:
-        return []
-    pack_token_raw = int_tokens[-3]
-    try:
-        pack_code_i = pack_token_raw.replace(",", "")
-        case_qty_i = int_tokens[-2].replace(",", "")
-        price_i = int_tokens[-1].replace(",", "")
-        pack_code = str(pack_code_i)
-        case_qty = int(case_qty_i)
-        price = int(price_i)
-    except Exception:
-        return []
-
-    # OCR/PDF extraction sometimes swaps the `case_qty` and `price` columns.
-    # Example symptom: UI shows `price=53` but `53` is actually the case qty.
-    #
-    # Heuristic (fix): if the parsed `price` is below our expected minimum price,
-    # but the parsed `case_qty` looks like a valid price (>= PRICE_MIN), swap them.
-    PRICE_MIN = int(os.getenv("PRICE_MIN", "100"))
-    PRICE_MAX = int(os.getenv("PRICE_MAX", "100000"))
-    if price < PRICE_MIN and case_qty >= PRICE_MIN:
-        price, case_qty = case_qty, price
-
-    # Basic plausibility filters (especially important for OCR fallback).
-    # Typical SKF price tables have prices in the hundreds+ and case quantities as small integers.
-    if price < PRICE_MIN:
-        return []
-    if price > PRICE_MAX:
-        return []
-    if case_qty < 1 or case_qty > 200:
-        return []
-
-    # Extract designation near the start.
-    m = re.search(
-        r"^(?:\d+\s+)?(?P<designation>(?:[A-Za-z]{2,12}\s*\d[\dA-Za-z/\-()]*|\d{4,}[\dA-Za-z/\-()]*))(?:\s|$)",
-        row_text,
-    )
-    if not m:
-        # Fallback: search anywhere for a letter prefix followed by digits.
-        m = re.search(
-            r"(?P<designation>(?:[A-Za-z]{2,12}\s*\d|\d{4,})[\dA-Za-z/\-()]{0,12})",
-            row_text,
-        )
-    if not m:
-        return []
-
-    designation = _cleanup_ws(m.group("designation"))
-    contents: Optional[str] = None
-
-    # Best-effort contents extraction: text between designation and pack_code token.
-    # This works well for real text extraction; OCR may still produce noisy values.
-    try:
-        designation_end = m.end("designation")
-        pack_idx = row_text.rfind(pack_token_raw)
-        if pack_idx != -1 and pack_idx > designation_end:
-            c = row_text[designation_end:pack_idx].strip()
-            if c:
-                contents = _cleanup_ws(c)
-    except Exception:
-        contents = None
-
-    # Another plausibility filter: part numbers typically contain multiple digits (>= 3 in a row).
-    if not re.search(r"\d{3,}", designation):
-        return []
-
-    now = datetime.now(timezone.utc)
-    return [
-        {
-            "designation": designation,
-            "normalized_designation": normalize_designation(designation),
-            "contents": contents or None,
-            "pack_code": pack_code or None,
-            "case_qty": case_qty,
-            "price": price,
-            "source_file": source_file,
-            "last_updated": now,
-        }
-    ]
-
-
-def parse_pdf_to_products(pdf_path: str, source_file: Optional[str] = None) -> List[Dict[str, Any]]:
-    """
-    Pipeline:
-      Step 1: Extract raw text using pdfplumber
-      Step 2: Split into lines
-      Step 3: Detect format
-      OCR fallback if needed
-    """
+def parse_pdf_to_products(
+    pdf_path: str,
+    source_file: Optional[str],
+    price_list_type: Literal["automotive", "industrial"],
+) -> List[Dict[str, Any]]:
     products: List[Dict[str, Any]] = []
     ocr_enabled = os.getenv("OCR_ENABLED", "true").lower() in ("1", "true", "yes")
-
     with pdfplumber.open(pdf_path) as pdf:
         for idx, page in enumerate(pdf.pages):
-            text = page.extract_text(x_tolerance=1, y_tolerance=1) or ""
-            text = text.strip()
-
-            f1: List[Dict[str, Any]] = []
-            f2: List[Dict[str, Any]] = []
-
+            text = (page.extract_text(x_tolerance=1, y_tolerance=1) or "").strip()
+            parsed: List[Dict[str, Any]] = []
             if text:
-                f1 = parse_format1(text, source_file=source_file)
-                f2 = parse_format2(text, source_file=source_file)
-
-            # If we got nothing (or almost nothing), try OCR for that page.
-            if ocr_enabled and (not f1 and not f2):
+                parsed = (
+                    parse_automotive_text(text, source_file)
+                    if price_list_type == "automotive"
+                    else parse_industrial_text(text, source_file)
+                )
+            if ocr_enabled and not parsed:
                 try:
-                    ocr_text = _attempt_ocr_page(page)
-                    ocr_text = (ocr_text or "").strip()
-                    f1 = parse_format1(ocr_text, source_file=source_file)
-                    f2 = parse_format2(ocr_text, source_file=source_file)
+                    ocr_text = (_attempt_ocr_page(page) or "").strip()
+                    parsed = (
+                        parse_automotive_text(ocr_text, source_file)
+                        if price_list_type == "automotive"
+                        else parse_industrial_text(ocr_text, source_file)
+                    )
                 except Exception:
                     logger.exception("OCR failed for page %s", idx + 1)
-
-            # Format detection logic: if one format clearly dominates, take it.
-            if len(f2) >= len(f1) + 3 and len(f2) > 0:
-                products.extend(f2)
-            elif len(f1) > 0 and len(f1) >= len(f2):
-                products.extend(f1)
-            else:
-                products.extend(f1)
-                products.extend(f2)
-
-    # Dedupe within the upload by `normalized_designation`.
-    # We should not blindly use "last wins" because Format 2 (dual-column) rows
-    # can overwrite correct Format 1 interpretations (pack/case/price).
-    deduped: Dict[str, Dict[str, Any]] = {}
-    for p in products:
-        nd = p.get("normalized_designation") or ""
-        if not nd:
-            continue
-
-        existing = deduped.get(nd)
-        if not existing:
-            deduped[nd] = p
-            continue
-
-        # Prefer Format 1 rows (they include pack_code/case_qty).
-        existing_has_case = existing.get("case_qty") is not None
-        p_has_case = p.get("case_qty") is not None
-        existing_has_pack = existing.get("pack_code") is not None
-        p_has_pack = p.get("pack_code") is not None
-
-        if not existing_has_case and p_has_case:
-            deduped[nd] = p
-            continue
-        if not existing_has_pack and p_has_pack:
-            deduped[nd] = p
-            continue
-
-        # If both look like Format 1, keep the one with the larger price.
-        if existing_has_case and p_has_case and p.get("price") is not None:
-            try:
-                if int(p["price"]) > int(existing["price"]):
-                    deduped[nd] = p
-            except Exception:
-                # If comparison fails, keep existing.
-                pass
-
-        # Otherwise keep existing.
-
-    return list(deduped.values())
+            products.extend(parsed)
+    return _dedupe_products(products)
 
 
 class SearchResult(BaseModel):
@@ -500,6 +428,7 @@ class SearchResult(BaseModel):
     price: int
     pack_code: Optional[str] = None
     case_qty: Optional[int] = None
+    source_type: Literal["automotive", "industrial"]
     score: float
 
 
@@ -519,28 +448,57 @@ def search_products(db: Session, q: str, limit: int = 10, min_similarity: float 
         return []
 
     prefix = f"{norm}%"
-    # Prefer exact match, then prefix match, then fuzzy via pg_trgm similarity.
+    # Search both tables and rank by:
+    # exact > prefix > fuzzy ; automotive slightly ahead when tie.
     sql = text(
         """
-        SELECT
-            designation,
-            normalized_designation,
-            price,
-            pack_code,
-            case_qty,
-            (
-                CASE
-                    WHEN normalized_designation = :norm THEN 1000
-                    WHEN normalized_designation LIKE :prefix THEN 500
-                    ELSE 0
-                END
-                + similarity(normalized_designation, :norm) * 100
-            ) AS score
-        FROM products
-        WHERE
-            normalized_designation = :norm
-            OR normalized_designation LIKE :prefix
-            OR similarity(normalized_designation, :norm) > :min_sim
+        SELECT *
+        FROM (
+            SELECT
+                'automotive'::text AS source_type,
+                designation,
+                normalized_designation,
+                price,
+                pack_code,
+                case_qty,
+                (
+                    CASE
+                        WHEN normalized_designation = :norm THEN 1000
+                        WHEN normalized_designation LIKE :prefix THEN 500
+                        ELSE 0
+                    END
+                    + similarity(normalized_designation, :norm) * 100
+                    + 5
+                ) AS score
+            FROM automotive_products
+            WHERE
+                normalized_designation = :norm
+                OR normalized_designation LIKE :prefix
+                OR similarity(normalized_designation, :norm) > :min_sim
+
+            UNION ALL
+
+            SELECT
+                'industrial'::text AS source_type,
+                designation,
+                normalized_designation,
+                price,
+                pack_code,
+                case_qty,
+                (
+                    CASE
+                        WHEN normalized_designation = :norm THEN 1000
+                        WHEN normalized_designation LIKE :prefix THEN 500
+                        ELSE 0
+                    END
+                    + similarity(normalized_designation, :norm) * 100
+                ) AS score
+            FROM industrial_products
+            WHERE
+                normalized_designation = :norm
+                OR normalized_designation LIKE :prefix
+                OR similarity(normalized_designation, :norm) > :min_sim
+        ) x
         ORDER BY score DESC
         LIMIT :lim
         """
@@ -555,7 +513,14 @@ def search_products(db: Session, q: str, limit: int = 10, min_similarity: float 
         },
     ).mappings().all()
 
-    return [SearchResult(**row) for row in rows]
+    # Return best row per normalized designation, keeping highest score.
+    best: Dict[str, Dict[str, Any]] = {}
+    for r in rows:
+        nd = r["normalized_designation"]
+        if nd not in best or float(r["score"]) > float(best[nd]["score"]):
+            best[nd] = dict(r)
+    ordered = sorted(best.values(), key=lambda x: float(x["score"]), reverse=True)[: max(1, min(int(limit), 50))]
+    return [SearchResult(**row) for row in ordered]
 
 
 app = FastAPI(title="Voice Searchable Price List System (backend)")
@@ -588,8 +553,16 @@ def init_db() -> None:
         conn.execute(
             text(
                 """
-                CREATE INDEX IF NOT EXISTS products_normalized_designation_trgm_idx
-                ON products USING GIN (normalized_designation gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS automotive_products_normalized_designation_trgm_idx
+                ON automotive_products USING GIN (normalized_designation gin_trgm_ops);
+                """
+            )
+        )
+        conn.execute(
+            text(
+                """
+                CREATE INDEX IF NOT EXISTS industrial_products_normalized_designation_trgm_idx
+                ON industrial_products USING GIN (normalized_designation gin_trgm_ops);
                 """
             )
         )
@@ -612,6 +585,7 @@ def health() -> Dict[str, Any]:
 async def upload_pdf(
     file: UploadFile = File(...),
     source_file: Optional[str] = Form(None),
+    price_list_type: Literal["automotive", "industrial"] = Form(...),
 ) -> Dict[str, Any]:
     if not engine or not SessionLocal:
         raise HTTPException(status_code=500, detail="DATABASE_URL is not configured.")
@@ -632,9 +606,19 @@ async def upload_pdf(
         tmp_path = tmp.name
 
     try:
-        parsed_products = parse_pdf_to_products(tmp_path, source_file=source_name)
+        parsed_products = parse_pdf_to_products(
+            tmp_path,
+            source_file=source_name,
+            price_list_type=price_list_type,
+        )
         if not parsed_products:
             return {"parsed": 0, "upserted": 0, "unique_normalized": 0}
+
+        target_model = (
+            AutomotiveProduct
+            if price_list_type == "automotive"
+            else IndustrialProduct
+        )
 
         with SessionLocal() as db:
             # CRITICAL: upsert should modify ALL details.
@@ -653,18 +637,26 @@ async def upload_pdf(
                 if p.get("normalized_designation")
             ]
 
-            stmt = pg_insert(Product).values(payload_rows)
+            stmt = pg_insert(target_model).values(payload_rows)
             stmt = stmt.on_conflict_do_update(
                 index_elements=["normalized_designation"],
                 set_={
                     "designation": stmt.excluded.designation,
                     # Preserve existing non-null details when the newly parsed row has NULLs
                     # (common with Format 2 and OCR fallback).
-                    "contents": func.coalesce(stmt.excluded.contents, Product.contents),
-                    "pack_code": func.coalesce(stmt.excluded.pack_code, Product.pack_code),
-                    "case_qty": func.coalesce(stmt.excluded.case_qty, Product.case_qty),
+                    "contents": func.coalesce(
+                        stmt.excluded.contents, target_model.contents
+                    ),
+                    "pack_code": func.coalesce(
+                        stmt.excluded.pack_code, target_model.pack_code
+                    ),
+                    "case_qty": func.coalesce(
+                        stmt.excluded.case_qty, target_model.case_qty
+                    ),
                     "price": stmt.excluded.price,
-                    "source_file": func.coalesce(stmt.excluded.source_file, Product.source_file),
+                    "source_file": func.coalesce(
+                        stmt.excluded.source_file, target_model.source_file
+                    ),
                     "last_updated": stmt.excluded.last_updated,
                 },
             )

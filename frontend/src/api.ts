@@ -6,6 +6,7 @@ export type SearchResult = {
   price: number;
   pack_code?: string | null;
   case_qty?: number | null;
+  source_type: "automotive" | "industrial";
   score: number;
 };
 
@@ -115,10 +116,12 @@ const UPLOAD_TIMEOUT_MS = 180_000;
 
 export async function uploadPdf(
   file: File,
+  priceListType: "automotive" | "industrial",
   sourceFile?: string,
 ): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
+  form.append("price_list_type", priceListType);
   if (sourceFile?.trim()) {
     form.append("source_file", sourceFile.trim());
   }

@@ -17,13 +17,16 @@ export default function PdfUploadPanel() {
   const [dragOver, setDragOver] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [sourceLabel, setSourceLabel] = useState("");
+  const [priceListType, setPriceListType] = useState<"automotive" | "industrial">(
+    "automotive",
+  );
   const [lastResult, setLastResult] = useState<UploadResponse | null>(null);
   const [hint, setHint] = useState<string | null>(null);
 
   const mutation = useMutation({
     mutationFn: () => {
       if (!file) throw new Error("No file selected");
-      return uploadPdf(file, sourceLabel || file.name);
+      return uploadPdf(file, priceListType, sourceLabel || file.name);
     },
     onSuccess: (data) => {
       setLastResult(data);
@@ -183,6 +186,19 @@ export default function PdfUploadPanel() {
               Clear
             </button>
           </div>
+          <label className="mt-3 block text-xs font-medium text-slate-600">
+            Price list type
+            <select
+              value={priceListType}
+              onChange={(e) =>
+                setPriceListType(e.target.value as "automotive" | "industrial")
+              }
+              className="mt-1 w-full rounded-lg border border-slate-200/90 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-teal-500/0 transition duration-200 ease-out focus:border-teal-400 focus:ring-2 focus:ring-teal-500/20"
+            >
+              <option value="automotive">Automotive (6-column table)</option>
+              <option value="industrial">Industrial (designation-price pairs)</option>
+            </select>
+          </label>
           <label className="mt-3 block text-xs font-medium text-slate-600">
             Source name (optional)
             <input
