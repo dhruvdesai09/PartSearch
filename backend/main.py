@@ -345,49 +345,62 @@ def parse_industrial_text(
     lines = [_cleanup_ws(ln) for ln in text.splitlines() if _cleanup_ws(ln)]
     out: List[Dict[str, Any]] = []
 
+    def push_pair(designation_raw: Optional[str], price_raw: Optional[str]) -> None:
+        if not designation_raw or not price_raw:
+            return
+        designation = _cleanup_ws(designation_raw)
+        price = _parse_int(price_raw)
+        if not price:
+            return
+        if price < pmin or price > pmax:
+            return
+        # industrial part numbers should contain a meaningful digit run
+        if not re.search(r"\d{3,}", designation):
+            return
+        out.append(
+            {
+                "designation": designation,
+                "normalized_designation": normalize_designation(designation),
+                "contents": None,
+                "pack_code": None,
+                "case_qty": None,
+                "price": price,
+                "source_file": source_file,
+                "last_updated": datetime.now(timezone.utc),
+            }
+        )
+
+    # Primary matcher: expected 2-pair line.
     dual_re = re.compile(
         r"^(?P<d1>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)]+?)\s+(?P<p1>\d[\d,]*)\s+"
         r"(?P<d2>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)]+?)\s+(?P<p2>\d[\d,]*)$"
     )
+    # Salvage left or right pair independently when one side is malformed.
+    left_re = re.compile(
+        r"^(?P<d>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)]{1,90}?)\s+(?P<p>\d[\d,]*)\b"
+    )
+    right_re = re.compile(
+        r"(?P<d>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)]{1,90}?)\s+(?P<p>\d[\d,]*)$"
+    )
+
     for line in lines:
         m = dual_re.match(line)
-        if not m:
+        if m:
+            # Validate/store each side independently (critical improvement).
+            push_pair(m.group("d1"), m.group("p1"))
+            push_pair(m.group("d2"), m.group("p2"))
             continue
-        d1 = _cleanup_ws(m.group("d1"))
-        d2 = _cleanup_ws(m.group("d2"))
-        p1 = _parse_int(m.group("p1"))
-        p2 = _parse_int(m.group("p2"))
-        if not p1 or not p2:
-            continue
-        if p1 < pmin or p2 < pmin or p1 > pmax or p2 > pmax:
-            continue
-        if not re.search(r"\d{3,}", d1) or not re.search(r"\d{3,}", d2):
-            continue
-        now = datetime.now(timezone.utc)
-        out.append(
-            {
-                "designation": d1,
-                "normalized_designation": normalize_designation(d1),
-                "contents": None,
-                "pack_code": None,
-                "case_qty": None,
-                "price": p1,
-                "source_file": source_file,
-                "last_updated": now,
-            }
-        )
-        out.append(
-            {
-                "designation": d2,
-                "normalized_designation": normalize_designation(d2),
-                "contents": None,
-                "pack_code": None,
-                "case_qty": None,
-                "price": p2,
-                "source_file": source_file,
-                "last_updated": now,
-            }
-        )
+
+        # Fallback salvage path: keep whichever side parses.
+        ml = left_re.search(line)
+        mr = right_re.search(line)
+        if ml:
+            push_pair(ml.group("d"), ml.group("p"))
+        if mr:
+            # avoid double-pushing exact same pair from both regexes
+            if not (ml and ml.group("d") == mr.group("d") and ml.group("p") == mr.group("p")):
+                push_pair(mr.group("d"), mr.group("p"))
+
     return _dedupe_products(out)
 
 
