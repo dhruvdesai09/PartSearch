@@ -342,7 +342,44 @@ def parse_industrial_text(
         return []
     pmin = int(os.getenv("FORMAT2_PRICE_MIN", os.getenv("PRICE_MIN", "100")))
     pmax = int(os.getenv("FORMAT2_PRICE_MAX", os.getenv("PRICE_MAX", "100000")))
-    lines = [_cleanup_ws(ln) for ln in text.splitlines() if _cleanup_ws(ln)]
+    # Industrial PDFs often wrap cells so that a designation can appear on one
+    # extracted line and the corresponding price on the next line. The strict
+    # "designation price" regex would miss those pairs unless we merge such
+    # wrapped fragments.
+    raw_lines = [_cleanup_ws(ln) for ln in text.splitlines() if _cleanup_ws(ln)]
+    lines: List[str] = []
+    acc: str | None = None
+    acc_has_num = False
+    for ln in raw_lines:
+        has_num = bool(re.search(r"\d", ln))
+        if acc is None:
+            if not has_num:
+                acc = ln
+                acc_has_num = False
+            else:
+                lines.append(ln)
+            continue
+
+        # If accumulated text had no numbers and this line has numbers, merge.
+        if not acc_has_num and has_num:
+            lines.append(f"{acc} {ln}")
+            acc = None
+            acc_has_num = False
+            continue
+
+        # Keep extending non-numeric fragments.
+        if not has_num:
+            acc = f"{acc} {ln}"
+            acc_has_num = False
+            continue
+
+        # acc already contained numbers (or mixed), flush it and start anew.
+        lines.append(acc)
+        acc = ln
+        acc_has_num = has_num
+
+    if acc:
+        lines.append(acc)
     out: List[Dict[str, Any]] = []
 
     def push_pair(designation_raw: Optional[str], price_raw: Optional[str]) -> None:
@@ -354,8 +391,9 @@ def parse_industrial_text(
             return
         if price < pmin or price > pmax:
             return
-        # industrial part numbers should contain a meaningful digit run
-        if not re.search(r"\d{3,}", designation):
+        # industrial part numbers should contain a digit run
+        # (some OCR extractions may break longer digit runs, so require >=2).
+        if not re.search(r"\d{2,}", designation):
             return
         out.append(
             {
@@ -383,6 +421,13 @@ def parse_industrial_text(
         r"(?P<d>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)]{1,90}?)\s+(?P<p>\d[\d,]*)$"
     )
 
+    # Extra fallback: extract any number of "designation price" pairs from a line.
+    # This is useful when the PDF text extraction adds extra spaces/columns so the
+    # strict full-row regex doesn't match, but individual pairs still do.
+    pair_re = re.compile(
+        r"(?P<d>[A-Za-z0-9][A-Za-z0-9\s\-\(/\)\.]{1,80}?[A-Za-z0-9])\s+(?P<p>\d[\d,]*)"
+    )
+
     for line in lines:
         m = dual_re.match(line)
         if m:
@@ -400,6 +445,25 @@ def parse_industrial_text(
             # avoid double-pushing exact same pair from both regexes
             if not (ml and ml.group("d") == mr.group("d") and ml.group("p") == mr.group("p")):
                 push_pair(mr.group("d"), mr.group("p"))
+
+        # Final fallback: pair extraction anywhere in the line.
+        # Use a per-line set to avoid duplicates from overlapping matches.
+        found: set[tuple[str, int]] = set()
+        for pm in pair_re.finditer(line):
+            d_raw = pm.group("d")
+            p_raw = pm.group("p")
+            d_clean = _cleanup_ws(d_raw)
+            p_val = _parse_int(p_raw)
+            if not d_clean or not p_val:
+                continue
+            nd = normalize_designation(d_clean)
+            if not nd:
+                continue
+            key = (nd, p_val)
+            if key in found:
+                continue
+            found.add(key)
+            push_pair(d_clean, p_raw)
 
     return _dedupe_products(out)
 
